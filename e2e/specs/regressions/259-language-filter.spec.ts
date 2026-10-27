@@ -100,9 +100,9 @@ test('#259: the language filter setting saves through the Library tab and reads 
     const checkedBefore = await box.isChecked();
 
     // The label follows the region select (not saved)
-    await page.locator('#audible-region').selectOption('de');
+    await page.getByLabel('Audible Region').selectOption('de');
     const labelGerman = await page.getByText(/^Only show books in /).textContent();
-    await page.locator('#audible-region').selectOption(before.audibleRegion || 'us');
+    await page.getByLabel('Audible Region').selectOption(before.audibleRegion || 'us');
 
     // Test Connection, tick, Save
     await page.getByRole('button', { name: 'Test Connection' }).click();
@@ -159,7 +159,7 @@ for (const view of VIEWS) {
       const box = filterBox(page);
       await expect(box).toBeVisible({ timeout: 30_000 });
       await box.check();
-      await page.locator('#audible-region').scrollIntoViewIfNeeded();
+      await page.getByLabel('Audible Region').scrollIntoViewIfNeeded();
       await page.evaluate(() => window.scrollBy(0, -80));
       await shot(page, `1-settings-control-${view.name}`);
     } finally {
