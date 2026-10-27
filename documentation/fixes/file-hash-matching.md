@@ -63,23 +63,19 @@ for (const item of itemsWithoutAsin) {
 }
 ```
 
-**Phase 2: Request Matching**
+**Phase 2: Request Matching** (`matchRequestsToLibrary`, `src/lib/services/library/match-requests.ts`, shared by both jobs; the scan job still logs `Matched N/M requests` and both return `matchedDownloads`)
 ```typescript
-// Match requests to library items and mark as available
-const match = await findPlexMatch({
-  asin: audiobook.audibleAsin,
-  title: audiobook.title,
-  author: audiobook.author
-});
-
+// ABS only, request 'downloaded' + book folder on record: library link first (#284, below)
+// Otherwise, and when the link finds nothing: match by the book's ASIN
+const match = await findPlexMatch({ asin: audiobook.audibleAsin, title, author });
 if (match) {
-  // Update audiobook and request status
   await prisma.audiobook.update({ data: { absItemId: match.plexGuid } });
-  await prisma.request.update({ data: { status: 'available' } });
-
-  // No metadata match triggering needed:
-  // - Items without ASIN: Already handled in Phase 1
-  // - Items with ASIN: Already have correct metadata
+  // compare-and-set: two jobs in one window notify once
+  const { count } = await prisma.request.updateMany({
+    where: { id, status: { notIn: ['available', 'cancelled', 'denied'] } },
+    data: { status: 'available' /* + completedAt, counters reset */ },
+  });
+  if (count === 1) notify('request_available');
 }
 ```
 
@@ -140,6 +136,26 @@ model Audiobook {
 | ISBN only | None (`isbn` is never read as an ASIN) |
 | File-hash ASIN sent but ABS reports none | None: store only what ABS reports |
 | No `plex_library` row / write throws | None / own catch (logged; the item's match is not counted twice), loop continues |
+
+### Delivered requests link to the library item (#284)
+- **Why:** organize ends at `downloaded`, and only an ASIN match moved the request on. When ABS holds RMAB's folder under another ASIN (tags, folder name, its own match, another region), the request stayed `downloaded` forever.
+- **Rule:** after delivery the library item that holds RMAB's folder is the record. Before delivery the request ASIN still drives search (no change).
+- **When:** `backendMode === 'audiobookshelf'`, audiobook request `status === 'downloaded'`, `audiobook.filePath` set. Tried before the ASIN match, once per audiobook per run. Plex: ASIN match only (unchanged). Every other status: ASIN match only. Ebook requests are never matched.
+- **Data:** the ABS list's `path`/`relPath`/`isMissing` → `LibraryItem`; both jobs store `plex_library.file_path = item.path ?? existing.filePath` (also on the #222 race fallback). `isMissing` is not stored: it comes from this run's listing, else from the item fetch.
+- **Module:** `src/lib/services/library/request-library-link.ts` → `findDeliveredLibraryItem(book, deliveredAt, ctx)` → `{status:'linked', plexGuid, via:'path'|'hash'}` | `{status:'ambiguous', ids}` | `{status:'none'}`. Path helper shared with the request delete's `absItemInside`: `src/lib/utils/library-item-path.ts`.
+
+| Step | Candidates (this library's rows, loaded once per run, compared in JS) | Links when |
+|---|---|---|
+| Path | `rel` = RMAB folder relative to the canonical `media_dir` (none when empty or starting with `..`). Exact: row path (`\` → `/`, no trailing `/`, NFC) equals the folder or `rel`, or the ABS `relPath` equals `rel`. Suffix-only: the path ends with `'/' + rel`. Missing items skipped | exact: on its own (a hash difference does not block it); suffix-only: files hash equal, or `addedAt >= delivery - 1 h` |
+| Several path candidates | the qualified ones | exactly 1 with files hash = `audiobook.filesHash`; else ambiguous |
+| No path candidate | rows not linked to any audiobook, `addedAt >= delivery - 1 h`, oldest first, at most 20 (`HASH_FALLBACK_LIMIT`) | exactly 1 equal files hash; 2+ ambiguous |
+
+- **Delivery time:** the audiobook request's `completedAt` (organize sets it at `downloaded`), `updatedAt` when null. Never `audiobook.completedAt`: an ebook import overwrites that row's `completedAt` and `filePath`.
+- **Caveat:** with a separate ebook path template the ebook import leaves `filePath` at the ebook folder, so there is no path candidate and the hash fallback decides.
+- **Per run:** each item fetched (`GET /api/items/:id`) at most once, budget 50 (`LINK_HASH_LOOKUP_BUDGET`); a fetch error skips that candidate and the loop goes on.
+- **On link:** `audiobook.absItemId`; request `updateMany({where:{id, status:'downloaded'}})` → `available` + `completedAt` + counters reset; `request_available` only when the count is 1. `audible_asin`, title, author and narrator are **not** written.
+- **Ambiguous:** no link, the ASIN match still runs; warn once per audiobook per process, then debug.
+- **Upgrade:** the first scan fills `file_path` for every ABS row; requests stuck in `downloaded` then go `available` with one notification each.
 
 **Phase 2 (Request Match):** Match requests, no metadata triggering
 - Match requests to library items by ASIN/title/author
@@ -244,6 +260,7 @@ model Audiobook {
 - Fallback to fuzzy matching
 
 ## Fixed Issues
+- ✅ #284: a delivered request whose ABS item carries another ASIN stayed `downloaded` forever → linked by path or files hash (`request-library-link.ts`, `match-requests.ts`); the request ASIN and metadata are unchanged; both match paths complete the request with a compare-and-set, so two library jobs in one window notify once
 - ✅ #287 window: ASIN from the ABS match was discarded until the next full scan → read back in the same scan (`match-missing-asins.ts`); BookDate right swipe now runs the two ownership checks of `POST /api/requests` (any user's downloaded/available request, then library; not the in-flight check) and returns `requestCreated` + `reason`
 
 ## Related
