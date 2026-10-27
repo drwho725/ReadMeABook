@@ -178,6 +178,9 @@ export class AudiobookshelfLibraryService implements ILibraryService {
       year: metadata.publishedYear ? parseInt(metadata.publishedYear) : undefined,
       addedAt: new Date(item.addedAt),
       updatedAt: new Date(item.updatedAt),
+      path: item.path || undefined,
+      relPath: item.relPath || undefined,
+      isMissing: typeof item.isMissing === 'boolean' ? item.isMissing : undefined,
     };
   }
 }
