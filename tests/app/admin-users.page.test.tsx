@@ -369,6 +369,7 @@ describe('AdminUsersPage', () => {
 
       render(<AdminUsersPage />);
       await screen.findAllByText('PlexPat');
+      expect(deleteIn('PlexPat')).toBeInTheDocument();
       fireEvent.click(deleteIn('PlexPat')!);
 
       const message = await screen.findByText((text) => text.startsWith('Delete "PlexPat"?'));
@@ -387,6 +388,7 @@ describe('AdminUsersPage', () => {
 
       render(<AdminUsersPage />);
       await screen.findAllByText('OidcOlive');
+      expect(deleteIn('OidcOlive')).toBeInTheDocument();
       fireEvent.click(deleteIn('OidcOlive')!);
 
       const message = await screen.findByText((text) => text.startsWith('Delete "OidcOlive"?'));

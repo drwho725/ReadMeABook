@@ -250,10 +250,10 @@ describe('Admin users routes', () => {
     const payload = await response.json();
 
     expect(payload.success).toBe(true);
-    const { where, data } = prismaMock.user.updateMany.mock.calls[0][0];
-    expect(where).toEqual({ id: 'u4', deletedAt: null });
-    expect(data).toMatchObject({ deletedAt: expect.any(Date), deletedBy: 'admin-1', oidcSubject: null, loginTokenHash: null });
-    expect(data.plexId).toMatch(/^local-user-deleted-\d+$/);
+    const write = (prismaMock.user.updateMany.mock.calls[0] ?? prismaMock.user.update.mock.calls[0])[0];
+    expect(write.data).toMatchObject({ deletedAt: expect.any(Date), deletedBy: 'admin-1', oidcSubject: null, loginTokenHash: null });
+    expect(write.data.plexId).toMatch(/^local-user-deleted-\d+$/);
+    expect(write.where).toEqual({ id: 'u4', deletedAt: null });
   });
 
   it('prevents deleting yourself', async () => {
@@ -350,6 +350,7 @@ describe('Admin users routes', () => {
     const first = await deleteRow({ authProvider: 'plex', plexId: '1001' });
     const second = await deleteRow({ authProvider: 'plex', plexId: '1001' });
 
+    expect([first.status, second.status]).toEqual([200, 200]);
     expect(first.data.plexId).not.toBe(second.data.plexId);
   });
 
