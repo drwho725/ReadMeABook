@@ -10,14 +10,14 @@
  *      Customize home → Category → "Sub-categories of Literature & Fiction" (aria-expanded) →
  *      Horror → the real PUT saves it; the home page shows a "Horror" section; the real
  *      GET /api/user/home-sections and /api/audiobooks/category/<Horror id> answer for it.
- *   3  Keyboard at 375 px dark: Tab reaches the toggle, Enter expands it, Tab reaches Horror;
+ *   3  Keyboard at 375 px dark: Tab reaches the toggle, Enter expands it, Tab reaches the first sub-category;
  *      the filter shows Horror under its parent. Snapshots of the picker at 1280 light, 375 dark.
  * The browser never leaves the RMAB origin: every other request is aborted.
  */
 
 import fs from 'fs';
 import path from 'path';
-import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { test, expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { evidencePath, execBridgeAvailable, EXEC_BRIDGE_SKIP, Rmab, snap, stackExecSync, writeEvidence } from '../../lib/harness';
 
 test.skip(!execBridgeAvailable(), EXEC_BRIDGE_SKIP);
@@ -66,8 +66,18 @@ async function viewSession(browser: Browser, opts: { width: number; height: numb
 }
 
 async function shot(page: Page, name: string) {
+  await page.mouse.move(0, 0);
   await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
   await snap(page, '309', name);
+}
+
+/** Scroll the picker so the parent row (with its toggle) sits at the top of the list */
+async function scrollGroupToTop(toggle: Locator) {
+  await toggle.evaluate((btn) => {
+    const row = btn.closest('li')!;
+    const list = row.closest('ul')!;
+    list.scrollTop = row.offsetTop - list.offsetTop;
+  });
 }
 
 async function openPicker(page: Page) {
@@ -108,8 +118,15 @@ test('#309: a sub-category (Horror) is picked under its parent, saved, and shown
         await expect(toggle).toHaveAttribute('aria-expanded', 'true');
         const group = page.getByRole('list', { name: 'Literature & Fiction sub-categories' });
         await expect(group.getByRole('button')).toHaveCount(18);
-        await group.getByRole('button', { name: 'Horror', exact: true }).scrollIntoViewIfNeeded();
+        await scrollGroupToTop(toggle);
         await shot(page, 'picker-1280-light');
+
+        const filter = page.getByRole('searchbox', { name: 'Filter categories' });
+        await filter.fill('horror');
+        await expect(group.getByRole('button')).toHaveCount(1);
+        await shot(page, 'picker-filter-1280-light');
+        await filter.fill('');
+        await expect(group.getByRole('button')).toHaveCount(18);
 
         const saved = page.waitForResponse((r) => r.url().endsWith('/api/user/home-sections') && r.request().method() === 'PUT');
         await group.getByRole('button', { name: 'Horror', exact: true }).click();
@@ -156,7 +173,7 @@ test('#309: a sub-category (Horror) is picked under its parent, saved, and shown
         await expect(group.getByRole('button').first()).toBeFocused();
         // Horror is already a section: listed, disabled, "Added".
         await expect(group.getByRole('button', { name: /^Horror/ })).toBeDisabled();
-        await group.getByRole('button', { name: /^Horror/ }).scrollIntoViewIfNeeded();
+        await scrollGroupToTop(toggle);
         await shot(page, 'picker-375-dark');
 
         await page.getByRole('searchbox', { name: 'Filter categories' }).fill('horr');
