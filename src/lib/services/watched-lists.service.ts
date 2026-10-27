@@ -141,16 +141,20 @@ async function processSeriesForUsers(
   const title = subscriptions[0].seriesTitle;
   log.info(`Scraping watched series: "${title}" (${seriesAsin})`);
 
-  // Scrape all pages of the series (up to MAX_BOOKS_PER_SERIES)
+  // Scrape all pages of the series (up to MAX_BOOKS_PER_SERIES rows as listed, before the
+  // language filter hides any: a fully hidden page is not the end of the series)
   const allBooks: AudibleAudiobook[] = [];
+  let rowsSeen = 0;
   let page = 1;
   let hasMore = true;
 
-  while (hasMore && allBooks.length < MAX_BOOKS_PER_SERIES) {
+  while (hasMore && rowsSeen < MAX_BOOKS_PER_SERIES) {
     const result = await scrapeSeriesPage(seriesAsin, page);
-    if (!result || result.books.length === 0) break;
+    const rows = result ? (result.rawCount ?? result.books.length) : 0;
+    if (!result || rows === 0) break;
 
     allBooks.push(...result.books);
+    rowsSeen += rows;
     hasMore = result.hasMore;
     page++;
 
@@ -164,7 +168,7 @@ async function processSeriesForUsers(
   }
 
   stats.booksFound += allBooks.length;
-  if (hasMore && allBooks.length >= MAX_BOOKS_PER_SERIES && subscriptions.some((s) => s.newReleasesSince != null)) {
+  if (hasMore && rowsSeen >= MAX_BOOKS_PER_SERIES && subscriptions.some((s) => s.newReleasesSince != null)) {
     log.warn(`Series "${title}" has more than ${MAX_BOOKS_PER_SERIES} books; only the first ${MAX_BOOKS_PER_SERIES} in series order are checked, so new-only watches may miss its newest books`);
   }
 

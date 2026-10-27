@@ -21,6 +21,8 @@ const baseSettings = {
   hasLocalUsers: true,
   hasLocalAdmins: true,
   audibleRegion: 'us',
+
+  audibleLanguageFilter: false,
   plex: { url: 'http://plex', token: 'token', libraryId: 'lib', triggerScanAfterImport: false },
   audiobookshelf: { serverUrl: 'http://abs', apiToken: 'abs-token', libraryId: 'abs-lib', triggerScanAfterImport: false },
   oidc: {
@@ -223,6 +225,16 @@ describe('admin settings helpers', () => {
       '/api/admin/settings/plex',
       expect.objectContaining({ method: 'PUT' })
     );
+  });
+
+  it('sends the language filter with the Audible region', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeOk()).mockResolvedValueOnce(makeOk());
+
+    const { saveTabSettings } = await import('@/app/admin/settings/lib/helpers');
+    await saveTabSettings('library', { ...baseSettings, audibleRegion: 'de', audibleLanguageFilter: true }, [], []);
+
+    const [, init] = fetchWithAuthMock.mock.calls.find(([url]: [string]) => url === '/api/admin/settings/audible');
+    expect(JSON.parse(init.body)).toEqual({ region: 'de', languageFilter: true });
   });
 
   it('saves audiobookshelf settings when library tab is active', async () => {

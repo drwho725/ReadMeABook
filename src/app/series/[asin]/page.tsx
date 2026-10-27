@@ -10,6 +10,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import { AudiobookGrid } from '@/components/audiobooks/AudiobookGrid';
 import { LoadMoreBar } from '@/components/ui/LoadMoreBar';
+import { LanguageHiddenNote } from '@/components/ui/LanguageHiddenNote';
 import { SeriesDetailCard, SeriesDetailSkeleton } from '@/components/series/SeriesDetailCard';
 import { SimilarSeriesRow, SimilarSeriesSkeleton } from '@/components/series/SimilarSeriesRow';
 import { useSeriesDetail } from '@/lib/hooks/useSeries';
@@ -27,7 +28,7 @@ export default function SeriesDetailPage({
   const router = useRouter();
   const searchParams = useSearchParams();
   const fromSeriesTitle = searchParams.get('from');
-  const { series, hasMore, isLoading: seriesLoading, isLoadingMore, loadMore } = useSeriesDetail(asin);
+  const { series, hasMore, isLoading: seriesLoading, isLoadingMore, loadMore, filterLanguage, hiddenCount } = useSeriesDetail(asin);
   const { cardSize, setCardSize, squareCovers, setSquareCovers, hideAvailable, setHideAvailable } = usePreferences();
 
   const handleBack = useCallback(() => {
@@ -46,6 +47,8 @@ export default function SeriesDetailPage({
       : series?.books ?? [],
     [series, hideAvailable]
   );
+
+  const awaitingMore = !!filterLanguage && filteredBooks.length === 0 && hasMore;
 
   // Header count text: reflects filtered counts
   const visibleCount = filteredBooks.length;
@@ -123,23 +126,32 @@ export default function SeriesDetailPage({
                 </div>
               </div>
 
-              {/* Books Grid */}
-              <AudiobookGrid
-                audiobooks={filteredBooks}
-                isLoading={seriesLoading}
-                emptyMessage={`No books found for ${series.title}`}
-                cardSize={cardSize}
-                squareCovers={squareCovers}
-              />
+              <LanguageHiddenNote hiddenCount={hiddenCount} />
+
+              {/* Books Grid (language filter on with nothing shown yet and more pages: the bar only) */}
+              {!awaitingMore && (
+                <AudiobookGrid
+                  audiobooks={filteredBooks}
+                  isLoading={seriesLoading}
+                  emptyMessage={
+                    filterLanguage && hiddenCount > 0
+                      ? `No books in ${filterLanguage} found for ${series.title}`
+                      : `No books found for ${series.title}`
+                  }
+                  cardSize={cardSize}
+                  squareCovers={squareCovers}
+                />
+              )}
 
               {/* Load More Bar */}
-              {filteredBooks.length > 0 && (
+              {(filteredBooks.length > 0 || awaitingMore) && (
                 <LoadMoreBar
                   loadedCount={filteredBooks.length}
                   totalCount={series.bookCount > 0 ? series.bookCount : undefined}
                   hasMore={hasMore}
                   isLoading={isLoadingMore}
                   onLoadMore={loadMore}
+                  emptyText={awaitingMore ? `No books in ${filterLanguage} so far` : undefined}
                 />
               )}
             </div>

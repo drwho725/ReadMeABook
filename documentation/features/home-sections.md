@@ -31,6 +31,7 @@ Users customize their home page by adding/removing/reordering sections. Each sec
 - After built-in sections, queries DISTINCT categoryIds from `UserHomeSection`
 - Per section: wipe `AudibleCacheCategory` rows, scrape, upsert `AudibleCache` metadata, insert ranked category entries
 - Batch cooldown between sections (10-20s random)
+- Language filter on: rows whose `.languageLabel` names another language are not saved; unlabelled rows kept ([audible-language-filter.md](../integrations/audible-language-filter.md))
 - Constants exported from `audible-refresh.processor.ts`: `POPULAR_CATEGORY_ID`, `NEW_RELEASES_CATEGORY_ID`
 
 ## AudibleService Methods

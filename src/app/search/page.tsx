@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from '@/components/layout/Header';
 import { AudiobookGrid } from '@/components/audiobooks/AudiobookGrid';
 import { LoadMoreBar } from '@/components/ui/LoadMoreBar';
+import { LanguageHiddenNote } from '@/components/ui/LanguageHiddenNote';
 import { useSearch, Audiobook } from '@/lib/hooks/useAudiobooks';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { SectionToolbar } from '@/components/ui/SectionToolbar';
@@ -28,13 +29,16 @@ export default function SearchPage() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  const { results, totalResults, hasMore, isLoading, isLoadingMore, loadMore } = useSearch(debouncedQuery);
+  const { results, totalResults, hasMore, isLoading, isLoadingMore, loadMore, filterLanguage, hiddenCount } = useSearch(debouncedQuery);
 
   // Filter out available titles when hideAvailable is enabled
   const filteredResults = useMemo(
     () => hideAvailable ? results.filter((b: Audiobook) => !b.isAvailable && b.requestStatus !== 'completed') : results,
     [results, hideAvailable]
   );
+
+  // Language filter on: nothing to show yet, but Audible has more pages (the bar, not "No results")
+  const awaitingMore = !!filterLanguage && filteredResults.length === 0 && (hasMore || isLoadingMore);
 
   const handleSearch = useCallback((e: React.FormEvent) => {
     e.preventDefault();
@@ -137,17 +141,25 @@ export default function SearchPage() {
               </div>
             </div>
 
+            <LanguageHiddenNote hiddenCount={hiddenCount} />
+
             {/* Results Grid */}
-            <AudiobookGrid
-              audiobooks={filteredResults}
-              isLoading={isLoading}
-              emptyMessage={`No results found for "${debouncedQuery}"`}
-              cardSize={cardSize}
-              squareCovers={squareCovers}
-            />
+            {!(awaitingMore && !isLoadingMore) && (
+              <AudiobookGrid
+                audiobooks={filteredResults}
+                isLoading={isLoading || awaitingMore}
+                emptyMessage={
+                  filterLanguage && hiddenCount > 0
+                    ? `No results in ${filterLanguage} for "${debouncedQuery}"`
+                    : `No results found for "${debouncedQuery}"`
+                }
+                cardSize={cardSize}
+                squareCovers={squareCovers}
+              />
+            )}
 
             {/* Load More Bar */}
-            {filteredResults.length > 0 && (
+            {(filteredResults.length > 0 || awaitingMore) && (
               <LoadMoreBar
                 loadedCount={filteredResults.length}
                 totalCount={totalResults}
@@ -155,6 +167,7 @@ export default function SearchPage() {
                 isLoading={isLoadingMore}
                 onLoadMore={loadMore}
                 itemLabel="results"
+                emptyText={awaitingMore ? `No results in ${filterLanguage} so far` : undefined}
               />
             )}
           </div>

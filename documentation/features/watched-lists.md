@@ -27,7 +27,7 @@ Series routes are identical with `seriesAsin`, `seriesTitle`, response key `seri
 - Job `check_watched_lists`: daily `0 0 * * *` (scheduler) + targeted run on POST (`addCheckWatchedItemJob(userId, seriesAsin?, authorAsin?)`).
 - **Targeted run (#429):** a run with `seriesAsin` runs only the series pass for that series; with `authorAsin` only the author pass. It never re-checks the user's other watched lists. Scheduled runs (no ASIN) run both passes.
 - Grouped by ASIN: one scan per series/author serves all its watchers; 2 s between series/authors.
-- **Series:** `scrapeSeriesPage()` pages up to 200 books (series order, no early stop; the scraper has no newest-first order) → dedup → per watcher `booksForWatch()` → requests.
+- **Series:** `scrapeSeriesPage()` pages up to 200 books (series order, no early stop; the scraper has no newest-first order) → dedup → per watcher `booksForWatch()` → requests. Language filter on: other-language rows dropped; the 200 cap and the stop count raw rows ([audible-language-filter.md](../integrations/audible-language-filter.md)).
   - **Limit:** a series with more than 200 books is only checked through its first 200 in series order, so a new-only watch can miss its newest books; such a run logs one warning per series (only when it has a new-only watcher).
 - **Authors** (`src/lib/services/watched-lists-releases.ts` `scanAuthorLegs`):
   - Entire-catalog watchers: relevance scan as before (`searchByAuthorAsin` without sort), ≤4 pages of 50 raw products, stops when Audible has no more pages; a page with no matching books doesn't end it (#310).
