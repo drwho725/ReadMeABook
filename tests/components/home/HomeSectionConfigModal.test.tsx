@@ -119,6 +119,24 @@ describe('HomeSectionConfigModal category picker (#309)', () => {
     expect(within(picker).queryByRole('button', { name: 'Science Fiction & Fantasy' })).toBeNull();
   });
 
+  it('while filtering, a parent that matches by its own name can still be expanded to all its sub-categories', async () => {
+    renderModal();
+    const picker = await openPicker();
+
+    fireEvent.change(present(screen.queryByRole('searchbox', { name: 'Filter categories' })), { target: { value: 'literature' } });
+
+    const toggle = present(within(picker).queryByRole('button', { name: 'Sub-categories of Literature & Fiction' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('list', { name: 'Literature & Fiction sub-categories' })).toBeNull();
+    // Comedy & Humor shows only through its matching sub-category, so it has no toggle.
+    expect(within(picker).queryByRole('button', { name: 'Sub-categories of Comedy & Humor' })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const group = screen.getByRole('list', { name: 'Literature & Fiction sub-categories' });
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Classics', 'Horror', 'Humor & Satire']);
+  });
+
   it('marks an added sub-category as added under every parent that lists it', async () => {
     renderModal([
       POPULAR,

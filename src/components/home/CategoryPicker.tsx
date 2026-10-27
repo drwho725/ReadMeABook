@@ -19,10 +19,17 @@ interface Props {
   onCancel: () => void;
 }
 
+/** Keyboard focus: the filter input's violet ring, inset so the list's overflow does not clip it. */
+const FOCUS =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-500 ' +
+  'focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700';
+
 const ROW =
-  'w-full text-left py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 ' +
-  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700 transition-colors break-words ' +
+  'w-full text-left py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700/50 ' +
+  `${FOCUS} transition-colors break-words ` +
   'disabled:text-gray-400 dark:disabled:text-gray-500 disabled:hover:bg-transparent disabled:cursor-default';
+const PARENT_TEXT = 'font-medium text-gray-900 dark:text-gray-100';
+const SUB_TEXT = 'text-gray-700 dark:text-gray-300';
 
 function AddedTag({ added }: { added: boolean }) {
   if (!added) return null;
@@ -41,7 +48,8 @@ export function CategoryPicker({ categories, existingIds, onPick, onCancel }: Pr
       .map((cat) => {
         const subs = cat.subcategories ?? [];
         const matchingSubs = q ? subs.filter((s) => matches(s.name)) : subs;
-        return { cat, subs, matchingSubs, visible: !q || matches(cat.name) || matchingSubs.length > 0 };
+        const selfMatch = !q || matches(cat.name);
+        return { cat, subs, matchingSubs, selfMatch, visible: selfMatch || matchingSubs.length > 0 };
       })
       .filter((g) => g.visible);
   }, [categories, q]);
@@ -74,11 +82,13 @@ export function CategoryPicker({ categories, existingIds, onPick, onCancel }: Pr
             <div className="px-4 py-3 text-sm text-gray-500">No categories match &quot;{query.trim()}&quot;.</div>
           )}
           <ul aria-label="Audible categories" className="max-h-60 overflow-y-auto">
-            {groups.map(({ cat, subs, matchingSubs }) => {
-              // While filtering, matching sub-categories show without expanding.
+            {groups.map(({ cat, subs, matchingSubs, selfMatch }) => {
+              // While filtering, matching sub-categories show without expanding. A parent that
+              // matches by its own name keeps its toggle, which shows all its sub-categories.
               const filtering = q.length > 0;
-              const open = filtering ? matchingSubs.length > 0 : expanded.has(cat.id);
-              const shown = filtering ? matchingSubs : subs;
+              const showAll = expanded.has(cat.id) && selfMatch;
+              const open = showAll || (filtering && matchingSubs.length > 0);
+              const shown = showAll ? subs : matchingSubs;
               const listId = `${idPrefix}-sub-${cat.id}`;
               const added = existingIds.has(cat.id);
               return (
@@ -88,24 +98,24 @@ export function CategoryPicker({ categories, existingIds, onPick, onCancel }: Pr
                       type="button"
                       onClick={() => onPick({ id: cat.id, name: cat.name })}
                       disabled={added}
-                      className={`${ROW} flex-1 px-4`}
+                      className={`${ROW} ${PARENT_TEXT} flex-1 px-4`}
                     >
                       {cat.name}
                       <AddedTag added={added} />
                     </button>
-                    {subs.length > 0 && !filtering && (
+                    {subs.length > 0 && selfMatch && (
                       <button
                         type="button"
                         onClick={() => toggle(cat.id)}
-                        aria-expanded={open}
+                        aria-expanded={showAll}
                         aria-controls={listId}
                         aria-label={`Sub-categories of ${cat.name}`}
-                        className="flex items-center gap-1 px-3 text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700 transition-colors"
+                        className={`flex items-center justify-center gap-1 min-w-[44px] min-h-[44px] px-3 text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50 ${FOCUS} transition-colors`}
                       >
                         <span aria-hidden="true">{subs.length}</span>
                         <ChevronDownIcon
                           aria-hidden="true"
-                          className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
+                          className={`w-4 h-4 transition-transform ${showAll ? 'rotate-180' : ''}`}
                         />
                       </button>
                     )}
@@ -120,7 +130,7 @@ export function CategoryPicker({ categories, existingIds, onPick, onCancel }: Pr
                               type="button"
                               onClick={() => onPick({ id: sub.id, name: sub.name })}
                               disabled={subAdded}
-                              className={`${ROW} pl-8 pr-4`}
+                              className={`${ROW} ${SUB_TEXT} pl-8 pr-4`}
                             >
                               {sub.name}
                               <AddedTag added={subAdded} />
