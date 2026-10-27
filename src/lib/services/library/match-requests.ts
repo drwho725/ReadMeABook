@@ -6,8 +6,10 @@
  * request is matched by the book's ASIN (findPlexMatch), as before. Audiobookshelf only: a
  * `downloaded` request whose book RMAB delivered (folder on record) is first linked to the library
  * item that holds that folder (request-library-link, #284). The link never writes the book's
- * ASIN or metadata, and completes the request with a compare-and-set, so two jobs in the same
- * window notify once. Ebook requests are never matched (they end at `downloaded`).
+ * ASIN or metadata. Both paths complete the request with a compare-and-set (the link: only from
+ * `downloaded`; the ASIN match: from any non-terminal status), so two jobs in the same window
+ * (full scan, recently-added checks) notify once. Ebook requests are never matched (they end at
+ * `downloaded`).
  */
 
 import { prisma } from '@/lib/db';
@@ -34,13 +36,16 @@ export interface MatchRequestsResult {
   ambiguous: number;
 }
 
+/** Statuses a request is matched from; a request in any other status was completed meanwhile. */
+const MATCHABLE_STATUS = { notIn: ['available', 'cancelled', 'denied'] };
+
 type MatchableRequest = Awaited<ReturnType<typeof loadMatchableRequests>>[number];
 
 function loadMatchableRequests() {
   return prisma.request.findMany({
     where: {
       type: 'audiobook', // Only match audiobook requests (ebooks don't go to 'available')
-      status: { notIn: ['available', 'cancelled', 'denied'] },
+      status: MATCHABLE_STATUS,
       deletedAt: null,
     },
     include: {
@@ -94,7 +99,7 @@ async function completeLinked(request: MatchableRequest, plexGuid: string, via: 
   return true;
 }
 
-/** The ASIN match, unchanged from the two scan jobs it was lifted from. */
+/** The ASIN match lifted from the two scan jobs; the request update is now a compare-and-set. */
 async function matchByAsin(request: MatchableRequest, backendMode: string, logger: RMABLogger): Promise<boolean> {
   const audiobook = request.audiobook;
   const match = await findPlexMatch({
@@ -120,8 +125,15 @@ async function matchByAsin(request: MatchableRequest, backendMode: string, logge
   }
   await prisma.audiobook.update({ where: { id: audiobook.id }, data: updateData });
 
-  // Update request to available and clear any error state
-  await prisma.request.update({ where: { id: request.id }, data: AVAILABLE_DATA() });
+  // Update request to available and clear any error state, unless another job already did
+  const { count } = await prisma.request.updateMany({
+    where: { id: request.id, status: MATCHABLE_STATUS },
+    data: AVAILABLE_DATA(),
+  });
+  if (count !== 1) {
+    logger.debug(`Request ${request.id} was completed by another job; no second notification`);
+    return false;
+  }
   await notifyAvailable(request, logger);
   return true;
 }

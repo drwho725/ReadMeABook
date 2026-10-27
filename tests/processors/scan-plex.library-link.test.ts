@@ -110,6 +110,7 @@ function wire() {
   prismaMock.plexLibrary.findFirst.mockImplementation(async (a: Args) => plexBy(a.where) ?? null);
   prismaMock.plexLibrary.findUnique.mockImplementation(async (a: Args) => plexBy(a.where) ?? null);
   prismaMock.plexLibrary.create.mockImplementation(async (a: Args) => {
+    if (plexBy({ plexGuid: a.data?.plexGuid })) throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
     const row: Row = { id: `row-${db.plex.length + 1}`, filePath: null, asin: null, ...a.data };
     db.plex.push(row);
     return row;
@@ -261,5 +262,19 @@ describe('a delivered request is linked to its Audiobookshelf item (#284)', () =
 
     expect(request('req-ebook').status).toBe('downloaded');
     expect(notifications()).toHaveLength(0);
+  });
+
+  it('two concurrent ASIN matches of one request (two recently-added checks, #222): one notification', async () => {
+    seedDelivered({ status: 'processing' });
+    Object.assign(audiobook(), { audibleAsin: LIBRARY_ASIN, filePath: null }); // no link: ASIN match only
+    db.barrier = 2;
+    const { processPlexRecentlyAddedCheck } = await import('@/lib/processors/plex-recently-added.processor');
+    // Start the second check a moment later (two same-tick dynamic imports of a mocked module race in
+    // vitest); the barrier still makes both read the request before either writes.
+    const first = processPlexRecentlyAddedCheck({ jobId: 'job-6a' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Promise.all([first, processPlexRecentlyAddedCheck({ jobId: 'job-6b' })]);
+
+    expect([request().status, audiobook().absItemId, notifications().length]).toEqual(['available', 'abs-1', 1]);
   });
 });
