@@ -29,6 +29,8 @@ const FAKED_HOST = /^(api\.audible\.(com|ca|co\.uk|com\.au|fr|de|co\.jp|it|in|es
 
 type MetaRecord = { seq: number; service: string; host: string; path: string; status?: number; client?: string; method: string };
 
+// psql() trims its output, so multi-column reads join with '|': an empty first column would shift a tab split.
+
 const printenv = (service: string, name: string) => {
   try {
     return stackExecSync(service, ['printenv', name]).trim();
@@ -99,8 +101,8 @@ test('#284: a delivered request links to the ABS item holding its folder, whatev
   await waitOrganized(since, requestId);
   expect(delivered, 'precondition: the request was delivered and waits for the library').toBe('downloaded');
   const [filePath, filesHash, audiobookId] = psql(
-    `select coalesce(a.file_path,''), coalesce(a.files_hash,''), a.id from requests r join audiobooks a on a.id = r.audiobook_id where r.id = ${sqlStr(requestId)}`
-  ).split('\t');
+    `select concat_ws('|', coalesce(a.file_path,''), coalesce(a.files_hash,''), a.id) from requests r join audiobooks a on a.id = r.audiobook_id where r.id = ${sqlStr(requestId)}`
+  ).split('|');
   writeEvidence('284/delivered.json', { requestId, audiobookId, filePath, filesHash });
   expect(filePath.startsWith(`${MEDIA}/`), 'precondition: RMAB recorded its folder').toBe(true);
   const rel = filePath.slice(MEDIA.length + 1);
@@ -130,9 +132,9 @@ test('#284: a delivered request links to the ABS item holding its folder, whatev
 
   // 5. Read everything first (so a run on main shows every value), then assert.
   const [status, absItemId, audibleAsin, title] = psql(
-    `select r.status, coalesce(a.abs_item_id,''), coalesce(a.audible_asin,''), a.title from requests r join audiobooks a on a.id = r.audiobook_id where r.id = ${sqlStr(requestId)}`
-  ).split('\t');
-  const [libraryFilePath, libraryAsin] = psql(`select coalesce(file_path,''), coalesce(asin,'') from plex_library where plex_guid = ${sqlStr(item.id)}`).split('\t');
+    `select concat_ws('|', r.status, coalesce(a.abs_item_id,''), coalesce(a.audible_asin,''), a.title) from requests r join audiobooks a on a.id = r.audiobook_id where r.id = ${sqlStr(requestId)}`
+  ).split('|');
+  const [libraryFilePath, libraryAsin] = psql(`select concat_ws('|', coalesce(file_path,''), coalesce(asin,'')) from plex_library where plex_guid = ${sqlStr(item.id)}`).split('|');
   const notifications = Number(psql(
     `select count(*) from jobs where type = 'send_notification' and payload->>'event' = 'request_available' and payload->>'requestId' = ${sqlStr(requestId)}`
   ));
