@@ -8,7 +8,9 @@
  * item that holds that folder (request-library-link, #284). The link never writes the book's
  * ASIN or metadata. Both paths complete the request with a compare-and-set (the link: only from
  * `downloaded`; the ASIN match: from any non-terminal status), so two jobs in the same window
- * (full scan, recently-added checks) notify once. Ebook requests are never matched (they end at
+ * (full scan, recently-added checks) notify once, and only the winner writes the book's item id.
+ * An ASIN match never overwrites a link made in the same run, and an item linked or ASIN-matched
+ * earlier in the run is not handed to a later book. Ebook requests are never matched (they end at
  * `downloaded`).
  */
 
@@ -34,6 +36,8 @@ export interface MatchRequestsResult {
   linkedByPath: number;
   linkedByHash: number;
   ambiguous: number;
+  /** links left undecided because an item could not be read (retried next run) */
+  unknown: number;
 }
 
 /** Statuses a request is matched from; a request in any other status was completed meanwhile. */
@@ -80,12 +84,17 @@ const AVAILABLE_DATA = () => ({
   updatedAt: new Date(),
 });
 
-/** Link writes: the item id on the book, then `downloaded` → `available` only if still `downloaded`. */
+/** The book's library item id, written only by the job whose compare-and-set won. */
+async function recordItem(audiobookId: string, data: { absItemId: string } | { plexGuid: string }, logger: RMABLogger): Promise<void> {
+  try {
+    await prisma.audiobook.update({ where: { id: audiobookId }, data: { ...data, updatedAt: new Date() } });
+  } catch (error) {
+    logger.error(`Library item id of book ${audiobookId} not saved: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Link: `downloaded` → `available` only if still `downloaded`, then the item id on the book. */
 async function completeLinked(request: MatchableRequest, plexGuid: string, via: string, logger: RMABLogger): Promise<boolean> {
-  await prisma.audiobook.update({
-    where: { id: request.audiobook.id },
-    data: { absItemId: plexGuid, updatedAt: new Date() },
-  });
   const { count } = await prisma.request.updateMany({
     where: { id: request.id, status: 'downloaded' },
     data: AVAILABLE_DATA(),
@@ -94,13 +103,18 @@ async function completeLinked(request: MatchableRequest, plexGuid: string, via: 
     logger.debug(`Request ${request.id} was completed by another job; no second notification`);
     return false;
   }
+  await recordItem(request.audiobook.id, { absItemId: plexGuid }, logger);
   logger.info(`Linked "${request.audiobook.title}" to Audiobookshelf item ${plexGuid} by ${via} (delivered by RMAB)`);
   await notifyAvailable(request, logger);
   return true;
 }
 
-/** The ASIN match lifted from the two scan jobs; the request update is now a compare-and-set. */
-async function matchByAsin(request: MatchableRequest, backendMode: string, logger: RMABLogger): Promise<boolean> {
+/**
+ * The ASIN match lifted from the two scan jobs. The request update is a compare-and-set, and the
+ * item id is written only when it won and this run did not link the book (`keepItem`).
+ * Returns the matched item id when this job completed the request.
+ */
+async function matchByAsin(request: MatchableRequest, backendMode: string, keepItem: boolean, logger: RMABLogger): Promise<string | null> {
   const audiobook = request.audiobook;
   const match = await findPlexMatch({
     asin: audiobook.audibleAsin || '',
@@ -108,22 +122,13 @@ async function matchByAsin(request: MatchableRequest, backendMode: string, logge
     author: audiobook.author,
     narrator: audiobook.narrator || undefined,
   });
-  if (!match) return false;
+  if (!match) return null;
 
   const originalStatus = request.status;
   logger.info(
     `Match found! "${audiobook.title}" -> "${match.title}"` +
     (originalStatus !== 'downloaded' ? ` (was '${originalStatus}')` : '')
   );
-
-  // Update audiobook with matched library item ID (plexGuid or abs_item_id)
-  const updateData: Record<string, unknown> = { updatedAt: new Date() };
-  if (backendMode === 'audiobookshelf') {
-    updateData.absItemId = match.plexGuid; // plexGuid field stores the externalId from either backend
-  } else {
-    updateData.plexGuid = match.plexGuid;
-  }
-  await prisma.audiobook.update({ where: { id: audiobook.id }, data: updateData });
 
   // Update request to available and clear any error state, unless another job already did
   const { count } = await prisma.request.updateMany({
@@ -132,15 +137,19 @@ async function matchByAsin(request: MatchableRequest, backendMode: string, logge
   });
   if (count !== 1) {
     logger.debug(`Request ${request.id} was completed by another job; no second notification`);
-    return false;
+    return null;
+  }
+  if (!keepItem) {
+    // plexGuid field stores the externalId from either backend
+    await recordItem(audiobook.id, backendMode === 'audiobookshelf' ? { absItemId: match.plexGuid } : { plexGuid: match.plexGuid }, logger);
   }
   await notifyAvailable(request, logger);
-  return true;
+  return match.plexGuid;
 }
 
 /**
- * Step 6 of both scan jobs. `listedItems` are the items this run listed (their relPath/isMissing
- * save item fetches); `libraryId` limits the link to rows of this library.
+ * Step 6 of both scan jobs. `listedItems` are the items this run listed (their isMissing saves
+ * item fetches); `libraryId` limits the link to rows of this library.
  */
 export async function matchRequestsToLibrary(opts: {
   backendMode: string;
@@ -153,31 +162,45 @@ export async function matchRequestsToLibrary(opts: {
   const requests = await loadMatchableRequests();
   logger.info(`Found ${requests.length} matchable requests (all non-terminal statuses)`);
 
-  const result: MatchRequestsResult = { total: requests.length, matched: 0, linkedByPath: 0, linkedByHash: 0, ambiguous: 0 };
+  const result: MatchRequestsResult = { total: requests.length, matched: 0, linkedByPath: 0, linkedByHash: 0, ambiguous: 0, unknown: 0 };
   const linkable = backendMode === 'audiobookshelf' && !!libraryId;
   let ctx: LinkContext | null = null;
   let linkUnavailable = false;
-  const links = new Map<string, LinkResult>(); // once per audiobook per run
+  const links = new Map<string, LinkResult>(); // per audiobook and delivery time, once per run
+  const linkedBooks = new Map<string, string>(); // audiobook id → the item this run linked it to
 
   for (const request of requests) {
     try {
       const audiobook = request.audiobook;
       if (linkable && !linkUnavailable && request.status === 'downloaded' && audiobook.filePath) {
-        let link = links.get(audiobook.id);
+        const deliveredAt = deliveryTime(request);
+        const key = `${audiobook.id}@${deliveredAt.getTime()}`;
+        let link = links.get(key);
         if (!link) {
           try {
             ctx ??= await createLinkContext({ libraryId: libraryId!, listedItems, logger });
-            link = await findDeliveredLibraryItem(audiobook, deliveryTime(request), ctx);
+            link = await findDeliveredLibraryItem(audiobook, deliveredAt, ctx);
           } catch (error) {
             linkUnavailable = true; // the ASIN match below still runs
             logger.error(`Library link unavailable for this run: ${error instanceof Error ? error.message : 'Unknown error'}`);
             link = { status: 'none' };
           }
-          links.set(audiobook.id, link);
-          if (link.status === 'linked') markLinked(ctx!, link.plexGuid);
+          const earlier = linkedBooks.get(audiobook.id);
+          if (link.status === 'linked' && earlier && earlier !== link.plexGuid) {
+            link = { status: 'ambiguous', ids: [earlier, link.plexGuid] }; // two requests of one book, two items
+          }
+          links.set(key, link);
+          if (link.status === 'linked') {
+            markLinked(ctx!, link.plexGuid, audiobook.id);
+            linkedBooks.set(audiobook.id, link.plexGuid);
+          }
           if (link.status === 'ambiguous') {
             result.ambiguous++;
             logAmbiguousLink(audiobook, link.ids, logger);
+          }
+          if (link.status === 'unknown') {
+            result.unknown++;
+            logger.debug(`Library link: "${audiobook.title}" not decided (an Audiobookshelf item could not be read); the next run tries again`);
           }
         }
         if (link.status === 'linked') {
@@ -190,10 +213,21 @@ export async function matchRequestsToLibrary(opts: {
         }
       }
 
-      if (await matchByAsin(request, backendMode, logger)) result.matched++;
+      const keepItem = linkedBooks.has(audiobook.id);
+      const item = await matchByAsin(request, backendMode, keepItem, logger);
+      if (item) {
+        result.matched++;
+        if (ctx && !keepItem) markLinked(ctx, item, audiobook.id); // later fallbacks in this run skip it
+      }
     } catch (error) {
       logger.error(`Failed to match request ${request.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+  if (result.linkedByPath + result.linkedByHash + result.ambiguous + result.unknown > 0) {
+    logger.info(
+      `Library link: ${result.linkedByPath} by path, ${result.linkedByHash} by hash, ` +
+      `${result.ambiguous} ambiguous, ${result.unknown} left for the next run (item not readable)`
+    );
   }
   return result;
 }

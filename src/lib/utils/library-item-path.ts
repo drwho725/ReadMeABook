@@ -21,13 +21,18 @@ export function normalizeRelPath(p: string): string {
 }
 
 /**
- * `folder` relative to the canonical `mediaDir` (both canonicalized, then normalized).
- * Null when the folder is media_dir itself (empty) or lies outside it (starts with `..`).
+ * A canonical `folder` relative to a canonical `dir`, normalized.
+ * Null when the folder is the dir itself (empty) or lies outside it (starts with `..`).
  */
-export async function libraryRelativePath(folder: string, mediaDir: string): Promise<string | null> {
-  const relative = path.posix.relative(await canonicalPath(mediaDir), await canonicalPath(folder));
+export function relativeInside(canonicalFolder: string, canonicalDir: string): string | null {
+  const relative = path.posix.relative(canonicalDir, canonicalFolder);
   if (!relative) return null;
   const rel = normalizeItemPath(relative);
   if (!rel || rel === '.' || rel.startsWith('..')) return null;
   return rel;
+}
+
+/** `folder` relative to `mediaDir` (both canonicalized first); see relativeInside. */
+export async function libraryRelativePath(folder: string, mediaDir: string): Promise<string | null> {
+  return relativeInside(await canonicalPath(folder), await canonicalPath(mediaDir));
 }

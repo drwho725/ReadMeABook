@@ -358,7 +358,8 @@ describe('processScanPlex', () => {
       },
     ] as any);
     prismaMock.audiobook.update.mockResolvedValue({});
-    prismaMock.request.update.mockResolvedValue({});
+    // The match completes the request with a compare-and-set (one row), then records the item
+    prismaMock.request.updateMany.mockImplementation(async (a: { where: { id?: string } }) => ({ count: a.where.id ? 1 : 0 }));
 
     const matcher = await import('@/lib/utils/audiobook-matcher');
     (matcher.findPlexMatch as ReturnType<typeof vi.fn>).mockResolvedValue({

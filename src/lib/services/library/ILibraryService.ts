@@ -32,7 +32,6 @@ export interface LibraryItem {
   addedAt: Date;
   updatedAt: Date;
   path?: string;           // ABS only: the item's folder as ABS sees it (stored in plex_library.file_path)
-  relPath?: string;        // ABS only: path relative to its ABS library folder
   isMissing?: boolean;     // ABS only: ABS no longer finds the item's files
 }
 

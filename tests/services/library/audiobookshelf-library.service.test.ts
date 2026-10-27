@@ -35,7 +35,6 @@ function makeAudiobookItem(overrides: Record<string, any> = {}) {
     addedAt: overrides.addedAt ?? 1700000000000,
     updatedAt: overrides.updatedAt ?? 1700000100000,
     ...(overrides.path !== undefined ? { path: overrides.path } : {}),
-    ...(overrides.relPath !== undefined ? { relPath: overrides.relPath } : {}),
     ...(overrides.isMissing !== undefined ? { isMissing: overrides.isMissing } : {}),
     media: {
       duration: overrides.duration ?? 3600,
@@ -150,7 +149,6 @@ describe('AudiobookshelfLibraryService', () => {
         duration: 3600,
         coverPath: '/covers/1.jpg',
         path: '/audiobooks/Author/Title',
-        relPath: 'Author/Title',
         isMissing: false,
       }),
     ]);
@@ -173,7 +171,6 @@ describe('AudiobookshelfLibraryService', () => {
       addedAt: new Date(1700000000000),
       updatedAt: new Date(1700000100000),
       path: '/audiobooks/Author/Title',
-      relPath: 'Author/Title',
       isMissing: false,
     });
   });
@@ -184,7 +181,6 @@ describe('AudiobookshelfLibraryService', () => {
     const [item] = await new AudiobookshelfLibraryService().getLibraryItems('lib-1');
 
     expect(item.path).toBeUndefined();
-    expect(item.relPath).toBeUndefined();
     expect(item.isMissing).toBeUndefined();
   });
 

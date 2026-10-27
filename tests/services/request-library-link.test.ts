@@ -17,11 +17,13 @@ import {
   findDeliveredLibraryItem,
   HASH_FALLBACK_LIMIT,
   LINK_HASH_LOOKUP_BUDGET,
+  LINK_WINDOW_AFTER_MS,
   logAmbiguousLink,
   newLinkContext,
   type LinkRow,
 } from '@/lib/services/library/request-library-link';
 import { libraryRelativePath } from '@/lib/utils/library-item-path';
+import { ITEM_CACHE_MS, ITEM_ERROR_CACHE_MS, type ItemCache } from '@/lib/services/library/library-item-lookup';
 
 const HASH = generateFilesHash(['01 - Part One.mp3', '02 - Part Two.mp3']);
 const OTHER_HASH = generateFilesHash(['track01.mp3']);
@@ -53,16 +55,20 @@ function book(over: Partial<{ filePath: string | null; filesHash: string | null 
 
 function ctxWith(rows: LinkRow[], opts: {
   fetchItem?: (id: string) => Promise<unknown>;
-  listed?: { externalId: string; relPath?: string; isMissing?: boolean }[];
-  linkedIds?: string[];
+  listed?: { externalId: string; isMissing?: boolean }[];
+  audiobooks?: { id: string; absItemId?: string | null; filePath?: string | null }[];
+  cache?: ItemCache;
+  now?: () => number;
 } = {}) {
   return newLinkContext({
     rows,
     mediaDir: media,
-    linkedIds: opts.linkedIds ?? [],
+    audiobooks: opts.audiobooks ?? [],
     listedItems: opts.listed ?? [],
     fetchItem: opts.fetchItem ?? (async () => absItem()),
     logger,
+    cache: opts.cache,
+    now: opts.now,
   });
 }
 
@@ -77,13 +83,20 @@ beforeEach(() => {
 });
 
 describe('path link', () => {
-  it('links an exact relPath match without fetching the item', async () => {
+  it("links RMAB's own folder (exact path) without fetching the item", async () => {
     const fetchItem = vi.fn();
-    const rows = [{ plexGuid: 'abs-1', filePath: '/audiobooks/Author/Delivered Book B0REQUEST1', addedAt: minutes(-600) }];
-    const ctx = ctxWith(rows, { fetchItem, listed: [{ externalId: 'abs-1', relPath: 'Author/Delivered Book B0REQUEST1', isMissing: false }] });
+    const rows = [{ plexGuid: 'abs-1', filePath: book().filePath!, addedAt: minutes(-600) }];
+    const ctx = ctxWith(rows, { fetchItem, listed: [{ externalId: 'abs-1', isMissing: false }] });
 
     expect(await findDeliveredLibraryItem(book(), DELIVERED, ctx)).toEqual({ status: 'linked', plexGuid: 'abs-1', via: 'path' });
     expect(fetchItem).not.toHaveBeenCalled();
+  });
+
+  it('the same relative path under another folder, outside the window, links only by files hash', async () => {
+    const rows = [{ plexGuid: 'abs-1', filePath: '/audiobooks/Author/Delivered Book B0REQUEST1', addedAt: minutes(-600) }];
+    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', isMissing: false }] });
+
+    expect(await findDeliveredLibraryItem(book(), DELIVERED, ctx)).toEqual({ status: 'linked', plexGuid: 'abs-1', via: 'hash' });
   });
 
   it('links an exact path match even when the hash differs (files renamed by an ABS tool)', async () => {
@@ -96,7 +109,7 @@ describe('path link', () => {
 
   it('a suffix-only match (another ABS mount) links when the item was added after delivery', async () => {
     const rows = [{ plexGuid: 'abs-1', filePath: '/mnt/abs/audiobooks/Author/Delivered Book B0REQUEST1', addedAt: minutes(5) }];
-    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', relPath: 'audiobooks/Author/Delivered Book B0REQUEST1', isMissing: false }] });
+    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', isMissing: false }] });
 
     expect(await findDeliveredLibraryItem(book(), DELIVERED, ctx)).toEqual({ status: 'linked', plexGuid: 'abs-1', via: 'path' });
   });
@@ -121,7 +134,7 @@ describe('path link', () => {
     const nfd = 'Ame\u0301lie Poulain';
     const rmabFolder = path.join(media, 'Author', nfd) + path.sep;
     const rows = [{ plexGuid: 'abs-1', filePath: 'D:\\abs\\Author\\Am\u00e9lie Poulain\\', addedAt: minutes(10) }];
-    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', relPath: 'Author\\Am\u00e9lie Poulain\\', isMissing: false }] });
+    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', isMissing: false }] });
 
     expect(await findDeliveredLibraryItem(book({ filePath: rmabFolder }), DELIVERED, ctx)).toEqual({ status: 'linked', plexGuid: 'abs-1', via: 'path' });
   });
@@ -163,7 +176,7 @@ describe('path link', () => {
 
     // filePath === media_dir: no path candidate even though a row "ends with" nothing; no hash → none
     const rows = [{ plexGuid: 'abs-1', filePath: '/audiobooks', addedAt: minutes(5) }];
-    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', relPath: '', isMissing: false }] });
+    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', isMissing: false }] });
     expect(await findDeliveredLibraryItem(book({ filePath: media, filesHash: null }), DELIVERED, ctx)).toEqual({ status: 'none' });
   });
 });
@@ -186,7 +199,7 @@ describe('hash fallback (no path candidate)', () => {
       { plexGuid: 'past-cap', filePath: '/x/past-cap', addedAt: minutes(500) },
     ];
     const fetchItem = vi.fn(async (id: string) => absItem({ hash: ['too-old', 'linked', 'past-cap'].includes(id) ? HASH : OTHER_HASH }));
-    const ctx = ctxWith(rows, { fetchItem, linkedIds: ['linked'] });
+    const ctx = ctxWith(rows, { fetchItem, audiobooks: [{ id: 'other-book', absItemId: 'linked' }] });
 
     expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, ctx)).toEqual({ status: 'none' });
     const fetched = fetchItem.mock.calls.map((c) => c[0]);
@@ -207,17 +220,37 @@ describe('hash fallback (no path candidate)', () => {
     expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, ctx)).toEqual({ status: 'ambiguous', ids: ['one', 'two'] });
   });
 
-  it('an item fetch that throws skips that candidate and the loop goes on', async () => {
+  it('an item ABS no longer has (404) is skipped and the loop goes on', async () => {
+    const rows = [
+      { plexGuid: 'deleted', filePath: '/x/deleted', addedAt: minutes(1) },
+      { plexGuid: 'good', filePath: '/x/good', addedAt: minutes(2) },
+    ];
+    const fetchItem = vi.fn(async (id: string) => {
+      if (id === 'deleted') throw new Error('ABS API error: 404 Not Found');
+      return absItem();
+    });
+    const ctx = ctxWith(rows, { fetchItem });
+    expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, ctx)).toEqual({ status: 'linked', plexGuid: 'good', via: 'hash' });
+  });
+
+  it('an item that cannot be read (5xx) leaves the book undecided this run', async () => {
     const rows = [
       { plexGuid: 'broken', filePath: '/x/broken', addedAt: minutes(1) },
       { plexGuid: 'good', filePath: '/x/good', addedAt: minutes(2) },
     ];
     const fetchItem = vi.fn(async (id: string) => {
-      if (id === 'broken') throw new Error('ABS 500');
+      if (id === 'broken') throw new Error('ABS API error: 500 Internal Server Error');
       return absItem();
     });
     const ctx = ctxWith(rows, { fetchItem });
-    expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, ctx)).toEqual({ status: 'linked', plexGuid: 'good', via: 'hash' });
+    expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, ctx)).toEqual({ status: 'unknown' });
+  });
+
+  it('the window ends 72 h after delivery', async () => {
+    const inside = ctxWith([{ plexGuid: 'late', filePath: '/x/late', addedAt: new Date(DELIVERED.getTime() + LINK_WINDOW_AFTER_MS) }]);
+    expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, inside)).toEqual({ status: 'linked', plexGuid: 'late', via: 'hash' });
+    const after = ctxWith([{ plexGuid: 'later', filePath: '/x/later', addedAt: minutes(73 * 60) }]);
+    expect(await findDeliveredLibraryItem(book({ filePath: outside() }), DELIVERED, after)).toEqual({ status: 'none' });
   });
 
   it('no stored hash: no fallback', async () => {
@@ -251,8 +284,40 @@ describe('per-run guards', () => {
       results.push(await findDeliveredLibraryItem({ ...book({ filePath: outside }), id: `ab-${i}` }, minutes(60 + i * 200), ctx));
     }
     expect(fetchItem).toHaveBeenCalledTimes(LINK_HASH_LOOKUP_BUDGET);
-    // budget exhausted before the fourth book: its matching item (i-65) is never fetched, so no link
-    expect(results.map((r) => r.status)).toEqual(['none', 'none', 'none', 'none']);
+    // the third book's pool hits the budget halfway: undecided, as is the fourth (its match i-65 is never read)
+    expect(results.map((r) => r.status)).toEqual(['none', 'none', 'unknown', 'unknown']);
+  });
+
+  it('a later run reuses a read item for 6 h, then reads it again', async () => {
+    let now = DELIVERED.getTime();
+    const cache: ItemCache = new Map();
+    const fetchItem = vi.fn(async () => absItem({ hash: OTHER_HASH }));
+    const rows = [{ plexGuid: 'abs-1', filePath: '/x/a', addedAt: minutes(1) }];
+    const run = () => findDeliveredLibraryItem(book({ filePath: path.join(media, '..', 'elsewhere', 'Book') }), DELIVERED, ctxWith(rows, { fetchItem, cache, now: () => now }));
+
+    await run();
+    now += ITEM_CACHE_MS - 1;
+    await run();
+    expect(fetchItem).toHaveBeenCalledTimes(1);
+    now += 1;
+    await run();
+    expect(fetchItem).toHaveBeenCalledTimes(2);
+  });
+
+  it('a later run asks again for an unreadable item only after 1 h', async () => {
+    let now = DELIVERED.getTime();
+    const cache: ItemCache = new Map();
+    const fetchItem = vi.fn(async () => { throw new Error('ABS API error: 502 Bad Gateway'); });
+    const rows = [{ plexGuid: 'abs-1', filePath: '/x/a', addedAt: minutes(1) }];
+    const run = () => findDeliveredLibraryItem(book({ filePath: path.join(media, '..', 'elsewhere', 'Book') }), DELIVERED, ctxWith(rows, { fetchItem, cache, now: () => now }));
+
+    expect(await run()).toEqual({ status: 'unknown' });
+    now += ITEM_ERROR_CACHE_MS - 1;
+    expect(await run()).toEqual({ status: 'unknown' });
+    expect(fetchItem).toHaveBeenCalledTimes(1);
+    now += 1;
+    await run();
+    expect(fetchItem).toHaveBeenCalledTimes(2);
   });
 
   it('warns once per audiobook about an ambiguous link, then logs at debug', () => {
@@ -270,9 +335,9 @@ describe('delivery time', () => {
     // and completedAt 3 h later. No path candidate is left, so the hash fallback decides, and its
     // window must start at the audiobook request's delivery.
     const request = { completedAt: DELIVERED, updatedAt: minutes(200) };
-    const ebookRow = { ...book({ filePath: path.join(media, 'Ebooks', 'Author', 'Delivered Book') }), completedAt: minutes(180) };
+    const ebookRow = { ...book({ filePath: path.join(media, 'Ebooks', 'Author', 'Delivered Book') }), fileFormat: 'epub', completedAt: minutes(180) };
     const rows = [{ plexGuid: 'abs-1', filePath: '/audiobooks/Author/Delivered Book B0REQUEST1', addedAt: minutes(10) }];
-    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', relPath: 'Author/Delivered Book B0REQUEST1', isMissing: false }] });
+    const ctx = ctxWith(rows, { listed: [{ externalId: 'abs-1', isMissing: false }] });
 
     expect(deliveryTime(request)).toEqual(DELIVERED);
     expect(await findDeliveredLibraryItem(ebookRow, deliveryTime(request), ctx)).toEqual({ status: 'linked', plexGuid: 'abs-1', via: 'hash' });
